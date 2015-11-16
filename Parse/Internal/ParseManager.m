@@ -86,7 +86,7 @@ static NSString *const _ParseApplicationIdFileName = @"applicationId";
     PFNotDesignatedInitializer();
 }
 
-- (instancetype)initWithApplicationId:(NSString *)applicationId clientKey:(NSString *)clientKey {
+- (instancetype)initWithConfiguration:(ParseClientConfiguration *)configuration {
     self = [super init];
     if (!self) return nil;
 
@@ -104,17 +104,7 @@ static NSString *const _ParseApplicationIdFileName = @"applicationId";
     _controllerAccessQueue = dispatch_queue_create("com.parse.controller.access", DISPATCH_QUEUE_SERIAL);
     _preloadQueue = dispatch_queue_create("com.parse.preload", DISPATCH_QUEUE_SERIAL);
 
-    _applicationId = [applicationId copy];
-    _clientKey = [clientKey copy];
-
-    return self;
-}
-
-- (void)configureWithApplicationGroupIdentifier:(NSString *)applicationGroupIdentifier
-                containingApplicationIdentifier:(NSString *)containingApplicationIdentifier
-                          enabledLocalDataStore:(BOOL)localDataStoreEnabled {
-    _applicationGroupIdentifier = [applicationGroupIdentifier copy];
-    _containingApplicationIdentifier = [containingApplicationIdentifier copy];
+    _configuration = [configuration copy];
 
     // Migrate any data if it's required.
     [self _migrateSandboxDataToApplicationGroupContainerIfNeeded];
@@ -122,11 +112,13 @@ static NSString *const _ParseApplicationIdFileName = @"applicationId";
     // TODO: (nlutsenko) Make it not terrible!
     [[self.persistenceController getPersistenceGroupAsync] waitForResult:nil withMainThreadWarning:NO];
 
-    if (localDataStoreEnabled) {
-        PFOfflineStoreOptions options = (_applicationGroupIdentifier ?
+    if (_configuration.localDatastoreEnabled) {
+        PFOfflineStoreOptions options = (_configuration.applicationGroupIdentifier ?
                                          PFOfflineStoreOptionAlwaysFetchFromSQLite : 0);
         [self loadOfflineStoreWithOptions:options];
     }
+
+    return self;
 }
 
 ///--------------------------------------
@@ -134,8 +126,8 @@ static NSString *const _ParseApplicationIdFileName = @"applicationId";
 ///--------------------------------------
 
 - (void)loadOfflineStoreWithOptions:(PFOfflineStoreOptions)options {
-    PFConsistencyAssert(!_offlineStore, @"Can't load offline store more than once.");
     dispatch_barrier_sync(_offlineStoreAccessQueue, ^{
+        PFConsistencyAssert(!_offlineStore, @"Can't load offline store more than once.");
         _offlineStore = [[PFOfflineStore alloc] initWithFileManager:self.fileManager options:options];
     });
 }
@@ -218,7 +210,7 @@ static NSString *const _ParseApplicationIdFileName = @"applicationId";
     __block PFKeychainStore *store = nil;
     dispatch_sync(_keychainStoreAccessQueue, ^{
         if (!_keychainStore) {
-            NSString *bundleIdentifier = (_containingApplicationIdentifier ?: [[NSBundle mainBundle] bundleIdentifier]);
+            NSString *bundleIdentifier = (self.configuration.containingApplicationBundleIdentifier ?: [[NSBundle mainBundle] bundleIdentifier]);
             NSString *service = [NSString stringWithFormat:@"%@.%@", bundleIdentifier, PFKeychainStoreDefaultService];
             _keychainStore = [[PFKeychainStore alloc] initWithService:service];
         }
@@ -233,8 +225,8 @@ static NSString *const _ParseApplicationIdFileName = @"applicationId";
     __block PFFileManager *fileManager = nil;
     dispatch_sync(_fileManagerAccessQueue, ^{
         if (!_fileManager) {
-            _fileManager = [[PFFileManager alloc] initWithApplicationIdentifier:self.applicationId
-                                                     applicationGroupIdentifier:self.applicationGroupIdentifier];
+            _fileManager = [[PFFileManager alloc] initWithApplicationIdentifier:self.configuration.applicationId
+                                                     applicationGroupIdentifier:self.configuration.applicationGroupIdentifier];
         }
         fileManager = _fileManager;
     });
@@ -270,7 +262,7 @@ static NSString *const _ParseApplicationIdFileName = @"applicationId";
             return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
         }] continueWithSuccessBlock:^id(BFTask *task) {
             if (task.result) {
-                if ([self.applicationId isEqualToString:task.result]) {
+                if ([self.configuration.applicationId isEqualToString:task.result]) {
                     // Everything is valid, no need to remove, set applicationId here.
                     return nil;
                 }
@@ -279,15 +271,15 @@ static NSString *const _ParseApplicationIdFileName = @"applicationId";
                 [self.keyValueCache removeAllObjects];
             }
             return [[group removeAllDataAsync] continueWithSuccessBlock:^id(BFTask *task) {
-                NSData *applicationIdData = [self.applicationId dataUsingEncoding:NSUTF8StringEncoding];
+                NSData *applicationIdData = [self.configuration.applicationId dataUsingEncoding:NSUTF8StringEncoding];
                 return [group setDataAsync:applicationIdData forKey:_ParseApplicationIdFileName];
             }];
         }] continueWithBlock:^id(BFTask *task) {
             return [group endLockedContentAccessAsyncToDataForKey:_ParseApplicationIdFileName];
         }];
     };
-    return [[PFPersistenceController alloc] initWithApplicationIdentifier:self.applicationId
-                                               applicationGroupIdentifier:self.applicationGroupIdentifier
+    return [[PFPersistenceController alloc] initWithApplicationIdentifier:self.configuration.applicationId
+                                               applicationGroupIdentifier:self.configuration.applicationGroupIdentifier
                                                    groupValidationHandler:validationHandler];
 }
 
@@ -311,8 +303,8 @@ static NSString *const _ParseApplicationIdFileName = @"applicationId";
     dispatch_sync(_commandRunnerAccessQueue, ^{
         if (!_commandRunner) {
             _commandRunner = [PFURLSessionCommandRunner commandRunnerWithDataSource:self
-                                                                      applicationId:self.applicationId
-                                                                          clientKey:self.clientKey];
+                                                                      applicationId:self.configuration.applicationId
+                                                                          clientKey:self.configuration.clientKey];
         }
         runner = _commandRunner;
     });
@@ -447,7 +439,7 @@ static NSString *const _ParseApplicationIdFileName = @"applicationId";
     // There is no need to migrate anything on OSX, since we are using globally available folder.
 #if TARGET_OS_IOS
     // Do nothing if there is no application group container or containing application is specified.
-    if (!self.applicationGroupIdentifier || self.containingApplicationIdentifier) {
+    if (!self.configuration.applicationGroupIdentifier || self.configuration.containingApplicationBundleIdentifier) {
         return;
     }
 
