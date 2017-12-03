@@ -1,5 +1,5 @@
 Pod::Spec.new do |s|
-  s.name             = 'Parse'
+  s.name             = 'Parse-Flovilmart'
   s.version          = '1.15.3'
   s.license          =  { :type => 'BSD', :file => 'LICENSE' }
   s.homepage         = 'http://parseplatform.org/'
